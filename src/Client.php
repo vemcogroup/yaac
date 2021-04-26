@@ -2,6 +2,9 @@
 
 namespace Afosto\Acme;
 
+use DateTime;
+use Exception;
+use LogicException;
 use Afosto\Acme\Data\Account;
 use Afosto\Acme\Data\Authorization;
 use Afosto\Acme\Data\Certificate;
@@ -9,9 +12,12 @@ use Afosto\Acme\Data\Challenge;
 use Afosto\Acme\Data\Order;
 use GuzzleHttp\Client as HttpClient;
 use GuzzleHttp\Exception\ClientException;
+use GuzzleHttp\Exception\GuzzleException;
+use League\Flysystem\FileExistsException;
 use GuzzleHttp\Exception\RequestException;
 use League\Flysystem\Filesystem;
 use Psr\Http\Message\ResponseInterface;
+use League\Flysystem\FileNotFoundException;
 
 class Client
 {
@@ -59,6 +65,16 @@ class Client
      * DNS validation
      */
     const VALIDATION_DNS = 'dns-01';
+
+    /**
+     * Default SSL key type to use
+     */
+    const DEFAULT_KEYTYPE = OPENSSL_KEYTYPE_RSA;
+
+    /**
+     * Default SSL key size to user
+     */
+    const DEFAULT_KEYSIZE = 4096;
 
     /**
      * @var string
@@ -130,11 +146,11 @@ class Client
         if ($this->getOption('fs', false)) {
             $this->filesystem = $this->getOption('fs');
         } else {
-            throw new \LogicException('No filesystem option supplied');
+            throw new LogicException('No filesystem option supplied');
         }
 
         if ($this->getOption('username', false) === false) {
-            throw new \LogicException('Username not provided');
+            throw new LogicException('Username not provided');
         }
 
         $this->init();
@@ -145,12 +161,12 @@ class Client
      *
      * @param $id
      * @return Order
-     * @throws \Exception
+     * @throws Exception|GuzzleException
      */
     public function getOrder($id): Order
     {
         $url = str_replace('new-order', 'order', $this->getUrl(self::DIRECTORY_NEW_ORDER));
-        $url = $url . '/' . $this->getAccount()->getId() . '/' . $id;
+        $url .= '/' . $this->getAccount()->getId() . '/' . $id;
         $response = $this->request($url, $this->signPayloadKid(null, $url));
         $data = json_decode((string)$response->getBody(), true);
 
@@ -175,12 +191,12 @@ class Client
      *
      * @param Order $order
      * @return bool
-     * @throws \Exception
+     * @throws Exception
      */
     public function isReady(Order $order): bool
     {
         $order = $this->getOrder($order->getId());
-        return $order->getStatus() == 'ready';
+        return $order->getStatus() === 'ready';
     }
 
 
@@ -189,7 +205,7 @@ class Client
      *
      * @param array $domains
      * @return Order
-     * @throws \Exception
+     * @throws Exception|GuzzleException
      */
     public function createOrder(array $domains): Order
     {
@@ -211,7 +227,7 @@ class Client
         ));
 
         $data = json_decode((string)$response->getBody(), true);
-        $order = new Order(
+        return new Order(
             $domains,
             $response->getHeaderLine('location'),
             $data['status'],
@@ -220,9 +236,6 @@ class Client
             $data['authorizations'],
             $data['finalize']
         );
-
-
-        return $order;
     }
 
     /**
@@ -230,7 +243,7 @@ class Client
      *
      * @param Order $order
      * @return array|Authorization[]
-     * @throws \Exception
+     * @throws Exception|GuzzleException
      */
     public function authorize(Order $order): array
     {
@@ -261,18 +274,23 @@ class Client
 
     /**
      * Run a self-test for the authorization
-     * @param Authorization $authorization
-     * @param string $type
-     * @param int $maxAttempts
+     * @param  Authorization  $authorization
+     * @param  string  $type
+     * @param  int  $maxAttempts
      * @return bool
+     * @throws GuzzleException
      */
     public function selfTest(Authorization $authorization, $type = self::VALIDATION_HTTP, $maxAttempts = 15): bool
     {
-        if ($type == self::VALIDATION_HTTP) {
+        if ($type === self::VALIDATION_HTTP) {
             return $this->selfHttpTest($authorization, $maxAttempts);
-        } elseif ($type == self::VALIDATION_DNS) {
+        }
+
+        if ($type === self::VALIDATION_DNS) {
             return $this->selfDNSTest($authorization, $maxAttempts);
         }
+
+        return false;
     }
 
     /**
@@ -281,7 +299,7 @@ class Client
      * @param Challenge $challenge
      * @param int $maxAttempts
      * @return bool
-     * @throws \Exception
+     * @throws Exception|GuzzleException
      */
     public function validate(Challenge $challenge, $maxAttempts = 15): bool
     {
@@ -292,35 +310,36 @@ class Client
             ], $challenge->getUrl())
         );
 
-        $data = [];
         do {
             $response = $this->request(
                 $challenge->getAuthorizationURL(),
                 $this->signPayloadKid(null, $challenge->getAuthorizationURL())
             );
+
             $data = json_decode((string)$response->getBody(), true);
-            if ($maxAttempts > 1 && $data['status'] != 'valid') {
+
+            if ($maxAttempts > 1 && $data['status'] !== 'valid') {
                 sleep(ceil(15 / $maxAttempts));
             }
-            $maxAttempts--;
-        } while ($maxAttempts > 0 && $data['status'] != 'valid');
 
-        return (isset($data['status']) && $data['status'] == 'valid');
+            $maxAttempts--;
+        } while ($maxAttempts > 0 && $data['status'] !== 'valid');
+
+        return (isset($data['status']) && $data['status'] === 'valid');
     }
 
     /**
      * Return a certificate
      *
      * @param Order $order
+     * @param int $keyType
+     * @param int $keySize
      * @return Certificate
-     * @throws \Exception
+     * @throws Exception|GuzzleException
      */
-    public function getCertificate(Order $order): Certificate
+    public function getCertificate(Order $order, int $keyType = self::DEFAULT_KEYTYPE, int $keySize = self::DEFAULT_KEYSIZE): Certificate
     {
-        $privateKey = Helper::getNewKey(
-            $this->getOption('key_type', 'EC'),
-            $this->getOption('key_size', 256)
-        );
+        $privateKey = Helper::getNewKey($keyType, $keySize);
         $csr = Helper::getCsr($order->getDomains(), $privateKey);
         $der = Helper::toDer($csr);
 
@@ -337,7 +356,8 @@ class Client
             $data['certificate'],
             $this->signPayloadKid(null, $data['certificate'])
         );
-        $chain = $str = preg_replace('/^[ \t]*[\r\n]+/m', '', (string)$certificateResponse->getBody());
+
+        $chain = preg_replace('/^[ \t]*[\r\n]+/m', '', (string)$certificateResponse->getBody());
         return new Certificate($privateKey, $csr, $chain);
     }
 
@@ -346,7 +366,7 @@ class Client
      * Return LE account information
      *
      * @return Account
-     * @throws \Exception
+     * @throws Exception|GuzzleException
      */
     public function getAccount(): Account
     {
@@ -362,20 +382,20 @@ class Client
 
         $data = json_decode((string)$response->getBody(), true);
         $accountURL = $response->getHeaderLine('Location');
-        $date = (new \DateTime())->setTimestamp(strtotime($data['createdAt']));
-        return new Account($data['contact'], $date, ($data['status'] == 'valid'), $data['initialIp'], $accountURL);
+        $date = (new DateTime())->setTimestamp(strtotime($data['createdAt']));
+        return new Account($data['contact'], $date, ($data['status'] === 'valid'), $data['initialIp'], $accountURL);
     }
 
     /**
      * Returns the ACME api configured Guzzle Client
      * @return HttpClient
      */
-    protected function getHttpClient()
+    protected function getHttpClient(): HttpClient
     {
         if ($this->httpClient === null) {
             $config = [
                 'base_uri' => (
-                ($this->getOption('mode', self::MODE_LIVE) == self::MODE_LIVE) ?
+                ($this->getOption('mode', self::MODE_LIVE) === self::MODE_LIVE) ?
                     self::DIRECTORY_LIVE : self::DIRECTORY_STAGING),
             ];
             if ($this->getOption('source_ip', false) !== false) {
@@ -390,7 +410,7 @@ class Client
      * Returns a Guzzle Client configured for self test
      * @return HttpClient
      */
-    protected function getSelfTestClient()
+    protected function getSelfTestClient(): HttpClient
     {
         return new HttpClient([
             'verify'          => false,
@@ -402,11 +422,12 @@ class Client
 
     /**
      * Self HTTP test
-     * @param Authorization $authorization
+     * @param  Authorization  $authorization
      * @param $maxAttempts
      * @return bool
+     * @throws GuzzleException
      */
-    protected function selfHttpTest(Authorization $authorization, $maxAttempts)
+    protected function selfHttpTest(Authorization $authorization, $maxAttempts): bool
     {
         do {
             $maxAttempts--;
@@ -417,7 +438,7 @@ class Client
                     $authorization->getFile()->getFilename()
                 );
                 $contents = (string)$response->getBody();
-                if ($contents == $authorization->getFile()->getContents()) {
+                if ($contents === $authorization->getFile()->getContents()) {
                     return true;
                 }
             } catch (RequestException $e) {
@@ -429,11 +450,12 @@ class Client
 
     /**
      * Self DNS test client that uses Cloudflare's DNS API
-     * @param Authorization $authorization
+     * @param  Authorization  $authorization
      * @param $maxAttempts
      * @return bool
+     * @throws GuzzleException
      */
-    protected function selfDNSTest(Authorization $authorization, $maxAttempts)
+    protected function selfDNSTest(Authorization $authorization, $maxAttempts): bool
     {
         do {
             $response = $this->getSelfTestDNSClient()->get(
@@ -448,7 +470,7 @@ class Client
             $data = json_decode((string)$response->getBody(), true);
             if (isset($data['Answer'])) {
                 foreach ($data['Answer'] as $result) {
-                    if (trim($result['data'], "\"") == $authorization->getTxtRecord()->getValue()) {
+                    if (trim($result['data'], "\"") === $authorization->getTxtRecord()->getValue()) {
                         return true;
                     }
                 }
@@ -466,7 +488,7 @@ class Client
      * Return the preconfigured client to call Cloudflare's DNS API
      * @return HttpClient
      */
-    protected function getSelfTestDNSClient()
+    protected function getSelfTestDNSClient(): HttpClient
     {
         return new HttpClient([
             'base_uri'        => 'https://cloudflare-dns.com',
@@ -496,8 +518,9 @@ class Client
     /**
      * Load the keys in memory
      *
-     * @throws \League\Flysystem\FileExistsException
-     * @throws \League\Flysystem\FileNotFoundException
+     * @throws FileExistsException
+     * @throws FileNotFoundException
+     * @throws Exception
      */
     protected function loadKeys()
     {
@@ -513,7 +536,7 @@ class Client
     /**
      * Agree to the terms of service
      *
-     * @throws \Exception
+     * @throws Exception|GuzzleException
      */
     protected function tosAgree()
     {
@@ -566,18 +589,14 @@ class Client
      */
     protected function getOption($key, $default = null)
     {
-        if (isset($this->config[$key])) {
-            return $this->config[$key];
-        }
-
-        return $default;
+        return $this->config[$key] ?? $default;
     }
 
     /**
      * Get key fingerprint
      *
      * @return string
-     * @throws \Exception
+     * @throws Exception
      */
     protected function getDigest(): string
     {
@@ -592,9 +611,10 @@ class Client
      * Send a request to the LE API
      *
      * @param $url
-     * @param array $payload
-     * @param string $method
+     * @param  array  $payload
+     * @param  string  $method
      * @return ResponseInterface
+     * @throws GuzzleException
      */
     protected function request($url, $payload = [], $method = 'POST'): ResponseInterface
     {
@@ -619,7 +639,7 @@ class Client
      * @param $directory
      *
      * @return mixed
-     * @throws \Exception
+     * @throws Exception
      */
     protected function getUrl($directory): string
     {
@@ -627,7 +647,7 @@ class Client
             return $this->directories[$directory];
         }
 
-        throw new \Exception('Invalid directory: ' . $directory . ' not listed');
+        throw new Exception('Invalid directory: ' . $directory . ' not listed');
     }
 
 
@@ -635,7 +655,7 @@ class Client
      * Get the key
      *
      * @return bool|resource|string
-     * @throws \Exception
+     * @throws Exception
      */
     protected function getAccountKey()
     {
@@ -645,7 +665,7 @@ class Client
         }
 
         if ($this->accountKey === false) {
-            throw new \Exception('Invalid account key');
+            throw new Exception('Invalid account key');
         }
 
         return $this->accountKey;
@@ -655,7 +675,7 @@ class Client
      * Get the header
      *
      * @return array
-     * @throws \Exception
+     * @throws Exception
      */
     protected function getJWKHeader(): array
     {
@@ -671,7 +691,7 @@ class Client
      *
      * @param $url
      * @return array
-     * @throws \Exception
+     * @throws Exception|GuzzleException
      */
     protected function getJWK($url): array
     {
@@ -692,8 +712,8 @@ class Client
      * Get KID envelope
      *
      * @param $url
-     * @param $kid
      * @return array
+     * @throws GuzzleException
      */
     protected function getKID($url): array
     {
@@ -714,7 +734,7 @@ class Client
      * @param $payload
      * @param $url
      * @return array
-     * @throws \Exception
+     * @throws Exception|GuzzleException
      */
     protected function signPayloadJWK($payload, $url): array
     {
@@ -725,7 +745,7 @@ class Client
         $result = openssl_sign($protected . '.' . $payload, $signature, $this->getAccountKey(), "SHA256");
 
         if ($result === false) {
-            throw new \Exception('Could not sign');
+            throw new Exception('Could not sign');
         }
 
         return [
@@ -741,7 +761,7 @@ class Client
      * @param $payload
      * @param $url
      * @return array
-     * @throws \Exception
+     * @throws Exception|GuzzleException
      */
     protected function signPayloadKid($payload, $url): array
     {
@@ -751,7 +771,7 @@ class Client
 
         $result = openssl_sign($protected . '.' . $payload, $signature, $this->getAccountKey(), "SHA256");
         if ($result === false) {
-            throw new \Exception('Could not sign');
+            throw new Exception('Could not sign');
         }
 
         return [

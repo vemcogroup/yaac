@@ -2,6 +2,7 @@
 
 namespace Afosto\Acme;
 
+use DateTime;
 use Exception;
 use function openssl_pkey_new;
 use const OPENSSL_KEYTYPE_EC;
@@ -33,16 +34,16 @@ class Helper
      *
      * @param $certificate
      *
-     * @return \DateTime
-     * @throws \Exception
+     * @return DateTime
+     * @throws Exception
      */
-    public static function getCertExpiryDate($certificate): \DateTime
+    public static function getCertExpiryDate($certificate): DateTime
     {
         $info = openssl_x509_parse($certificate);
         if ($info === false) {
-            throw new \Exception('Could not parse certificate');
+            throw new Exception('Could not parse certificate');
         }
-        $dateTime = new \DateTime();
+        $dateTime = new DateTime();
         $dateTime->setTimestamp($info['validTo_time_t']);
 
         return $dateTime;
@@ -51,36 +52,36 @@ class Helper
     /**
      * Get a new key
      *
-     * @param     $key_type
-     * @param int $key_size
-     *
+     * @param  int  $type
+     * @param  int  $size
      * @return string
-     * @throws \Exception
+     * @throws Exception
      */
-    public static function getNewKey($key_type, $key_size = 256): string
+    public static function getNewKey(int $type = Client::DEFAULT_KEYTYPE, int $size = Client::DEFAULT_KEYSIZE): string
     {
-        switch ($key_type) {
-            case 'EC':
-                if (256 === $key_size) {
-                    $curve_name = 'prime256v1';
-                }
-                elseif (384 === $key_size) {
-                    $curve_name = 'secp384r1';
-                }
-                else {
+        switch ($type) {
+            case OPENSSL_KEYTYPE_EC:
+                if ($size === 256) {
+                    $curveName = 'prime256v1';
+                } elseif ($size === 384) {
+                    $curveName = 'secp384r1';
+                } else {
                     throw new Exception('EC key size must be 256 or 384.');
                 }
+
                 $key = openssl_pkey_new([
-                    "private_key_type" => OPENSSL_KEYTYPE_EC,
-                    "curve_name" => $curve_name,
+                    "private_key_type" => $type,
+                    "curve_name" => $curveName,
                 ]);
                 break;
-            case 'RSA':
+
+            case OPENSSL_KEYTYPE_RSA:
                 $key = openssl_pkey_new([
-                    'private_key_bits' => 4096,
-                    'private_key_type' => OPENSSL_KEYTYPE_RSA,
+                    'private_key_bits' => $size,
+                    'private_key_type' => $type,
                 ]);
                 break;
+
             default:
                 throw new Exception('key type must be `RSA` or `EC`.');
         }
@@ -93,11 +94,11 @@ class Helper
     /**
      * Get a new CSR
      *
-     * @param array $domains
+     * @param  array  $domains
      * @param       $key
      *
      * @return string
-     * @throws \Exception
+     * @throws Exception
      */
     public static function getCsr(array $domains, $key): string
     {
@@ -118,25 +119,23 @@ class Helper
         file_put_contents($fn, implode("\n", $config));
         $csr = openssl_csr_new([
             'countryName' => 'NL',
-            'commonName'  => $primaryDomain,
+            'commonName' => $primaryDomain,
         ], $key, [
-            'config'         => $fn,
+            'config' => $fn,
             'req_extensions' => 'SAN',
-            'digest_alg'     => 'sha512',
+            'digest_alg' => 'sha512',
         ]);
         unlink($fn);
 
         if ($csr === false) {
-            throw new \Exception('Could not create a CSR');
+            throw new Exception('Could not create a CSR');
         }
 
-        if (openssl_csr_export($csr, $result) == false) {
-            throw new \Exception('CRS export failed');
+        if (openssl_csr_export($csr, $result) === false) {
+            throw new Exception('CRS export failed');
         }
 
-        $result = trim($result);
-
-        return $result;
+        return trim($result);
     }
 
     /**
@@ -154,14 +153,15 @@ class Helper
     /**
      * Get the key information
      *
+     * @param $key
      * @return array
-     * @throws \Exception
+     * @throws Exception
      */
     public static function getKeyDetails($key): array
     {
         $accountDetails = openssl_pkey_get_details($key);
         if ($accountDetails === false) {
-            throw new \Exception('Could not load account details');
+            throw new Exception('Could not load account details');
         }
 
         return $accountDetails;
@@ -169,9 +169,9 @@ class Helper
 
     /**
      * Split a two certificate bundle into separate multi line string certificates
-     * @param string $chain
+     * @param  string  $chain
      * @return array
-     * @throws \Exception
+     * @throws Exception
      */
     public static function splitCertificate(string $chain): array
     {
@@ -186,7 +186,7 @@ class Helper
         $intermediate = $certificates['intermediate'] ?? null;
 
         if (!$domain || !$intermediate) {
-            throw new \Exception('Could not parse certificate string');
+            throw new Exception('Could not parse certificate string');
         }
 
         return [$domain, $intermediate];
