@@ -587,7 +587,7 @@ class Client
      *
      * @return mixed|null
      */
-    protected function getOption($key, $default = null)
+    public function getOption($key, $default = null)
     {
         return $this->config[$key] ?? $default;
     }
