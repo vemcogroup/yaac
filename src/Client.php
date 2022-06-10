@@ -301,7 +301,7 @@ class Client
      * @return bool
      * @throws Exception|GuzzleException
      */
-    public function validate(Challenge $challenge, $maxAttempts = 15): bool
+    public function validate(Challenge $challenge, int $maxAttempts = 15): bool
     {
         $this->request(
             $challenge->getUrl(),
@@ -423,11 +423,11 @@ class Client
     /**
      * Self HTTP test
      * @param  Authorization  $authorization
-     * @param $maxAttempts
+     * @param int $maxAttempts
      * @return bool
      * @throws GuzzleException
      */
-    protected function selfHttpTest(Authorization $authorization, $maxAttempts): bool
+    protected function selfHttpTest(Authorization $authorization, int $maxAttempts): bool
     {
         do {
             $maxAttempts--;
@@ -515,18 +515,14 @@ class Client
         $this->account = $this->getAccount();
     }
 
-    /**
-     * Load the keys in memory
-     *
-     * @throws FileExistsException
-     * @throws FileNotFoundException
-     * @throws Exception
-     */
     protected function loadKeys()
     {
         //Make sure a private key is in place
         if ($this->getFilesystem()->has($this->getPath('account.pem')) === false) {
-            $this->getFilesystem()->write($this->getPath('account.pem'), Helper::getNewKey('RSA'));
+            $this->getFilesystem()->write(
+                $this->getPath('account.pem'),
+                Helper::getNewKey('RSA')
+            );
         }
         $privateKey = $this->getFilesystem()->read($this->getPath('account.pem'));
         $privateKey = openssl_pkey_get_private($privateKey);
